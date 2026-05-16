@@ -14,23 +14,73 @@ const DATA_FILE = path.join(__dirname, 'data.json');
 app.use(cors());
 app.use(express.json());
 
-// Initialize data file if not exists
+// In-memory data store for serverless environments
+let memoryData = null;
+
+// Initialize data file if not exists (for local dev)
 function initData() {
+  if (process.env.VERCEL || !fs.existsSync(DATA_FILE)) {
+    // Use in-memory for Vercel or if file doesn't exist
+    if (!memoryData) {
+      memoryData = {
+        businesses: [],
+        apiKeys: [],
+        machines: [],
+        machineTokens: [],
+        events: []
+      };
+    }
+    return;
+  }
+  
   if (!fs.existsSync(DATA_FILE)) {
     fs.writeFileSync(DATA_FILE, JSON.stringify({
       businesses: [],
-      apiKeys: []
+      apiKeys: [],
+      machines: [],
+      machineTokens: [],
+      events: []
     }, null, 2));
   }
 }
 
 function loadData() {
+  // Use in-memory store for Vercel
+  if (process.env.VERCEL) {
+    if (!memoryData) {
+      memoryData = {
+        businesses: [],
+        apiKeys: [],
+        machines: [],
+        machineTokens: [],
+        events: []
+      };
+    }
+    return memoryData;
+  }
+  
+  // Use file system for local dev
   initData();
-  return JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
+  try {
+    return JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
+  } catch (err) {
+    return { businesses: [], apiKeys: [], machines: [], machineTokens: [], events: [] };
+  }
 }
 
 function saveData(data) {
-  fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
+  // In-memory for Vercel (no persistence between invocations)
+  if (process.env.VERCEL) {
+    memoryData = data;
+    return;
+  }
+  
+  // File system for local dev
+  try {
+    fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
+  } catch (err) {
+    console.error('Failed to save data:', err);
+  }
 }
 
 // API Key validation middleware
