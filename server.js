@@ -455,8 +455,6 @@ app.delete('/api/v1/businesses/:businessId/apis/:apiId', validateApiKey, checkPe
 
 // ========== V3.0.0 TELEMETRY ROUTES ==========
 
-const crypto = require('crypto');
-
 /**
  * Validate machine token (separate from API keys)
  */
