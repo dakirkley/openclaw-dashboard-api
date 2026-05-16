@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { v4: uuidv4 } = require('uuid');
 require('dotenv').config();
 
@@ -401,6 +402,451 @@ app.delete('/api/v1/businesses/:businessId/apis/:apiId', validateApiKey, checkPe
   saveData(data);
   res.json({ success: true });
 });
+
+// ========== V3.0.0 TELEMETRY ROUTES ==========
+
+const crypto = require('crypto');
+
+/**
+ * Validate machine token (separate from API keys)
+ */
+function validateMachineToken(req, res, next) {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({ ok: false, error: { code: 'unauthorized', message: 'Missing Authorization header' } });
+  }
+  
+  const token = authHeader.substring(7);
+  const data = loadData();
+  
+  // Check if it's a machine token
+  const tokenRecord = data.machineTokens?.find(t => t.token === token && t.active);
+  
+  if (!tokenRecord) {
+    // Fall back to API key check for backward compatibility
+    const apiKeyRecord = data.apiKeys?.find(k => k.key === token);
+    if (!apiKeyRecord) {
+      return res.status(401).json({ ok: false, error: { code: 'unauthorized', message: 'Invalid token' } });
+    }
+    req.apiKey = apiKeyRecord;
+    req.isApiKey = true;
+    return next();
+  }
+  
+  // Update last used
+  tokenRecord.lastUsedAt = new Date().toISOString();
+  saveData(data);
+  
+  req.machineToken = tokenRecord;
+  req.isMachineToken = true;
+  next();
+}
+
+/**
+ * Get or create business for a machine
+ */
+function getOrCreateBusinessForMachine(data, machineInfo, tokenRecord) {
+  // If token is linked to a business, use that
+  if (tokenRecord.businessId) {
+    const business = data.businesses.find(b => b.business.id === tokenRecord.businessId);
+    if (business) return business;
+  }
+  
+  // Otherwise, create a new business based on machine info
+  const businessName = machineInfo.hostname || `Machine-${machineInfo.machine_id.substring(0, 8)}`;
+  
+  // Check if business already exists
+  let business = data.businesses.find(b => b.business.name === businessName);
+  if (business) return business;
+  
+  // Create new business
+  business = {
+    business: {
+      id: `biz_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+      name: businessName,
+      description: `Auto-created from OpenClaw v3.0.0 sync`,
+      endpointUrl: '',
+      apiKey: '',
+      color: '#0ea5e9',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    },
+    bots: [],
+    subAgents: [],
+    skills: [],
+    apis: []
+  };
+  
+  data.businesses.push(business);
+  
+  // Link token to business
+  tokenRecord.businessId = business.business.id;
+  
+  return business;
+}
+
+// Machine registration
+app.post('/api/openclaw/v1/machines/register', validateMachineToken, (req, res) => {
+  try {
+    const { machine_id, hostname, platform, arch, version, cpus, memory } = req.body;
+    
+    if (!machine_id) {
+      return res.status(400).json({ ok: false, error: { code: 'bad_request', message: 'machine_id is required' } });
+    }
+    
+    const data = loadData();
+    if (!data.machines) data.machines = [];
+    if (!data.machineTokens) data.machineTokens = data.machineTokens || [];
+    
+    const business = getOrCreateBusinessForMachine(data, req.body, req.machineToken || req.apiKey);
+    
+    let machine = data.machines.find(m => m.machine_id === machine_id);
+    
+    if (machine) {
+      machine.hostname = hostname || machine.hostname;
+      machine.platform = platform || machine.platform;
+      machine.arch = arch || machine.arch;
+      machine.version = version || machine.version;
+      machine.cpus = cpus || machine.cpus;
+      machine.memory = memory || machine.memory;
+      machine.last_seen = new Date().toISOString();
+      machine.updated_at = new Date().toISOString();
+      saveData(data);
+      
+      return res.json({ ok: true, machine: { machine_id: machine.machine_id, business_id: machine.business_id, registered_at: machine.registered_at, last_seen: machine.last_seen } });
+    }
+    
+    machine = {
+      id: `machine_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+      machine_id,
+      business_id: business.business.id,
+      hostname: hostname || 'unknown',
+      platform: platform || 'unknown',
+      arch: arch || 'unknown',
+      version: version || 'unknown',
+      cpus: cpus || 0,
+      memory: memory || 0,
+      registered_at: new Date().toISOString(),
+      last_seen: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      status: 'active'
+    };
+    
+    data.machines.push(machine);
+    saveData(data);
+    
+    res.status(201).json({ ok: true, machine: { machine_id: machine.machine_id, business_id: machine.business_id, registered_at: machine.registered_at, last_seen: machine.last_seen } });
+    
+  } catch (err) {
+    console.error('Machine registration error:', err);
+    res.status(500).json({ ok: false, error: { code: 'internal_error', message: err.message } });
+  }
+});
+
+// Heartbeat
+app.post('/api/openclaw/v1/machines/heartbeat', validateMachineToken, (req, res) => {
+  try {
+    const { machine_id, status, metrics } = req.body;
+    
+    if (!machine_id) {
+      return res.status(400).json({ ok: false, error: { code: 'bad_request', message: 'machine_id is required' } });
+    }
+    
+    const data = loadData();
+    if (!data.machines) data.machines = [];
+    
+    const machine = data.machines.find(m => m.machine_id === machine_id);
+    
+    if (!machine) {
+      return res.status(404).json({ ok: false, error: { code: 'not_found', message: 'Machine not found' } });
+    }
+    
+    machine.last_seen = new Date().toISOString();
+    machine.status = status || 'active';
+    if (metrics) machine.metrics = { ...machine.metrics, ...metrics };
+    
+    saveData(data);
+    
+    res.json({ ok: true, heartbeat: { machine_id, timestamp: machine.last_seen, status: machine.status } });
+    
+  } catch (err) {
+    console.error('Heartbeat error:', err);
+    res.status(500).json({ ok: false, error: { code: 'internal_error', message: err.message } });
+  }
+});
+
+// Inventory sync
+app.post('/api/openclaw/v1/sync/inventory', validateMachineToken, (req, res) => {
+  try {
+    const { machine_id, skills, agents, executors, sync_mode } = req.body;
+    
+    if (!machine_id) {
+      return res.status(400).json({ ok: false, error: { code: 'bad_request', message: 'machine_id is required' } });
+    }
+    
+    const data = loadData();
+    if (!data.machines) data.machines = [];
+    
+    const machine = data.machines.find(m => m.machine_id === machine_id);
+    
+    if (!machine) {
+      return res.status(404).json({ ok: false, error: { code: 'not_found', message: 'Machine not found. Register first.' } });
+    }
+    
+    const business = data.businesses.find(b => b.business.id === machine.business_id);
+    if (!business) {
+      return res.status(404).json({ ok: false, error: { code: 'not_found', message: 'Business not found' } });
+    }
+    
+    const results = { skills: { added: 0, updated: 0, removed: 0 }, bots: { added: 0, updated: 0, removed: 0 }, apis: { added: 0, updated: 0, removed: 0 } };
+    
+    // Sync skills
+    if (skills && Array.isArray(skills)) {
+      const syncedSkillIds = new Set();
+      
+      for (const skill of skills) {
+        const skillId = `skill_${machine_id}_${skill.name}`;
+        syncedSkillIds.add(skillId);
+        
+        const existingIndex = business.skills.findIndex(s => s.id === skillId);
+        
+        const skillData = {
+          id: skillId,
+          name: skill.name,
+          version: skill.version || '1.0.0',
+          description: skill.description || '',
+          commands: skill.commands || [],
+          category: skill.category || 'Other',
+          machine_id,
+          installedAt: existingIndex >= 0 ? business.skills[existingIndex].installedAt : new Date().toISOString(),
+          lastSynced: new Date().toISOString()
+        };
+        
+        if (existingIndex >= 0) {
+          business.skills[existingIndex] = skillData;
+          results.skills.updated++;
+        } else {
+          business.skills.push(skillData);
+          results.skills.added++;
+        }
+      }
+      
+      business.skills = business.skills.filter(s => {
+        if (s.machine_id === machine_id && !syncedSkillIds.has(s.id)) {
+          results.skills.removed++;
+          return false;
+        }
+        return true;
+      });
+    }
+    
+    // Sync agents as bots
+    if (agents && Array.isArray(agents)) {
+      const syncedBotIds = new Set();
+      
+      for (const agent of agents) {
+        const botId = `bot_${machine_id}_${agent.name || 'default'}`;
+        syncedBotIds.add(botId);
+        
+        const existingIndex = business.bots.findIndex(b => b.id === botId);
+        
+        const botData = {
+          id: botId,
+          name: agent.name || `${machine.hostname} Assistant`,
+          model: agent.model || 'unknown',
+          purpose: agent.purpose || 'General purpose assistant',
+          status: agent.status || 'active',
+          machine_id,
+          config: agent.config || {},
+          createdAt: existingIndex >= 0 ? business.bots[existingIndex].createdAt : new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        };
+        
+        if (existingIndex >= 0) {
+          business.bots[existingIndex] = botData;
+          results.bots.updated++;
+        } else {
+          business.bots.push(botData);
+          results.bots.added++;
+        }
+      }
+      
+      business.bots = business.bots.filter(b => {
+        if (b.machine_id === machine_id && !syncedBotIds.has(b.id)) {
+          results.bots.removed++;
+          return false;
+        }
+        return true;
+      });
+    }
+    
+    // Sync executors as APIs
+    if (executors && Array.isArray(executors)) {
+      const syncedApiIds = new Set();
+      
+      for (const executor of executors) {
+        const apiId = `api_${machine_id}_${executor.name || executor.provider}`;
+        syncedApiIds.add(apiId);
+        
+        const existingIndex = business.apis.findIndex(a => a.id === apiId);
+        
+        const apiData = {
+          id: apiId,
+          name: executor.name || `${executor.provider} API`,
+          provider: executor.provider || 'Unknown',
+          key_masked: executor.key_masked || '••••••••',
+          status: executor.status || 'active',
+          machine_id,
+          used_by_skills: executor.used_by_skills || [],
+          used_by_bots: executor.used_by_bots || [],
+          lastChecked: new Date().toISOString()
+        };
+        
+        if (existingIndex >= 0) {
+          business.apis[existingIndex] = apiData;
+          results.apis.updated++;
+        } else {
+          business.apis.push(apiData);
+          results.apis.added++;
+        }
+      }
+      
+      business.apis = business.apis.filter(a => {
+        if (a.machine_id === machine_id && !syncedApiIds.has(a.id)) {
+          results.apis.removed++;
+          return false;
+        }
+        return true;
+      });
+    }
+    
+    machine.last_inventory_sync = new Date().toISOString();
+    machine.sync_mode = sync_mode || 'metadata';
+    
+    saveData(data);
+    
+    res.json({ ok: true, results, machine_id, business_id: business.business.id, timestamp: new Date().toISOString() });
+    
+  } catch (err) {
+    console.error('Inventory sync error:', err);
+    res.status(500).json({ ok: false, error: { code: 'internal_error', message: err.message } });
+  }
+});
+
+// Health check
+app.post('/api/openclaw/v1/sync/health', validateMachineToken, (req, res) => {
+  res.json({ ok: true, server: { status: 'healthy', timestamp: new Date().toISOString(), version: '3.0.0' } });
+});
+
+// Events
+app.post('/api/openclaw/v1/sync/events', validateMachineToken, (req, res) => {
+  try {
+    const { machine_id, events } = req.body;
+    
+    if (!events || !Array.isArray(events)) {
+      return res.status(400).json({ ok: false, error: { code: 'bad_request', message: 'events array is required' } });
+    }
+    
+    const data = loadData();
+    if (!data.events) data.events = [];
+    
+    for (const event of events) {
+      data.events.push({
+        id: `event_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+        machine_id,
+        type: event.type || 'info',
+        message: event.message || '',
+        details: event.details || {},
+        timestamp: event.timestamp || new Date().toISOString(),
+        received_at: new Date().toISOString()
+      });
+    }
+    
+    if (data.events.length > 1000) data.events = data.events.slice(-1000);
+    
+    saveData(data);
+    
+    res.json({ ok: true, logged: events.length });
+    
+  } catch (err) {
+    console.error('Event logging error:', err);
+    res.status(500).json({ ok: false, error: { code: 'internal_error', message: err.message } });
+  }
+});
+
+// Machine token management
+app.post('/api/v1/machinetokens', validateApiKey, checkPermission('write'), (req, res) => {
+  try {
+    const { name, businessId, permissions = ['sync'] } = req.body;
+    
+    if (!name) return res.status(400).json({ success: false, error: 'Name is required' });
+    
+    const data = loadData();
+    if (!data.machineTokens) data.machineTokens = [];
+    
+    const newToken = {
+      id: uuidv4(),
+      name,
+      token: `ocm_${Buffer.from(uuidv4()).toString('base64').replace(/[^a-zA-Z0-9]/g, '').substring(0, 32)}`,
+      businessId: businessId || null,
+      permissions,
+      active: true,
+      createdAt: new Date().toISOString(),
+      lastUsedAt: null
+    };
+    
+    data.machineTokens.push(newToken);
+    saveData(data);
+    
+    res.status(201).json({ success: true, data: newToken, message: 'Machine token created. Save this token - you won\'t see it again!' });
+    
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get('/api/v1/machinetokens', validateApiKey, checkPermission('read'), (req, res) => {
+  const data = loadData();
+  const tokens = (data.machineTokens || []).map(t => ({ id: t.id, name: t.name, businessId: t.businessId, permissions: t.permissions, active: t.active, createdAt: t.createdAt, lastUsedAt: t.lastUsedAt }));
+  res.json({ success: true, data: tokens });
+});
+
+app.delete('/api/v1/machinetokens/:id', validateApiKey, checkPermission('delete'), (req, res) => {
+  const data = loadData();
+  if (!data.machineTokens) data.machineTokens = [];
+  
+  const tokenIndex = data.machineTokens.findIndex(t => t.id === req.params.id);
+  if (tokenIndex === -1) return res.status(404).json({ success: false, error: 'Token not found' });
+  
+  data.machineTokens[tokenIndex].active = false;
+  saveData(data);
+  
+  res.json({ success: true });
+});
+
+// Machine management
+app.get('/api/v1/machines', validateApiKey, checkPermission('read'), (req, res) => {
+  const data = loadData();
+  res.json({ success: true, data: data.machines || [] });
+});
+
+app.get('/api/v1/businesses/:businessId/machines', validateApiKey, checkPermission('read'), (req, res) => {
+  const data = loadData();
+  const machines = (data.machines || []).filter(m => m.business_id === req.params.businessId);
+  res.json({ success: true, data: machines });
+});
+
+app.delete('/api/v1/machines/:machineId', validateApiKey, checkPermission('delete'), (req, res) => {
+  const data = loadData();
+  if (!data.machines) data.machines = [];
+  
+  data.machines = data.machines.filter(m => m.machine_id !== req.params.machineId);
+  saveData(data);
+  
+  res.json({ success: true });
+});
+
+console.log('✓ OpenClaw v3.0.0 telemetry routes loaded');
 
 // Start server
 app.listen(PORT, () => {
