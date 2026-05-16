@@ -898,8 +898,13 @@ app.delete('/api/v1/machines/:machineId', validateApiKey, checkPermission('delet
 
 console.log('✓ OpenClaw v3.0.0 telemetry routes loaded');
 
-// Start server
-app.listen(PORT, () => {
-  console.log(`OpenClaw Dashboard API running on port ${PORT}`);
-  console.log(`Health check: http://localhost:${PORT}/health`);
-});
+// Export for Vercel serverless
+module.exports = app;
+
+// Start server if running locally (not on Vercel)
+if (!process.env.VERCEL) {
+  app.listen(PORT, () => {
+    console.log(`OpenClaw Dashboard API running on port ${PORT}`);
+    console.log(`Health check: http://localhost:${PORT}/health`);
+  });
+}
