@@ -1,0 +1,17 @@
+{
+  "businesses": [],
+  "apiKeys": [
+    {
+      "id": "922f7f92-2958-4b72-b1c6-af47a753ee32",
+      "name": "Production Server",
+      "key": "oc_NWRmMGZkODYtOWY5My00MzhjLTk4NDYt",
+      "permissions": [
+        "read",
+        "write",
+        "delete"
+      ],
+      "createdAt": "2026-05-03T03:52:28.541Z",
+      "lastUsedAt": null
+    }
+  ]
+}
