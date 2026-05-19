@@ -221,12 +221,17 @@ app.post('/api/openclaw/v1/machines/register', validateMachineToken, async (req,
       business = newBusiness;
     }
     
+    // Get client token from request
+    const authHeader = req.headers.authorization;
+    const clientToken = authHeader ? authHeader.replace('Bearer ', '') : null;
+    
     // Register machine
     const { data: machine, error: machineError } = await supabase
       .from('machines')
       .upsert({
         id: machine_id,
         business_id: business.id,
+        client_token: clientToken,
         hostname: hostname || 'unknown',
         platform: platform || 'unknown',
         arch: arch || 'unknown',
