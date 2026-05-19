@@ -194,15 +194,15 @@ app.post('/api/openclaw/v1/machines/register', validateMachineToken, async (req,
     const businessName = hostname || `Machine-${machine_id.substring(0, 8)}`;
     
     // Check if business exists
-    let { data: business } = await supabase
+    let { data: business, error: businessError } = await supabase
       .from('businesses')
       .select('*')
       .eq('name', businessName)
       .single();
     
-    if (!business) {
+    if (businessError || !business) {
       // Create business
-      const { data: newBusiness } = await supabase
+      const { data: newBusiness, error: createError } = await supabase
         .from('businesses')
         .insert({
           id: `biz_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
@@ -213,11 +213,16 @@ app.post('/api/openclaw/v1/machines/register', validateMachineToken, async (req,
         })
         .select()
         .single();
+      
+      if (createError) {
+        return res.status(500).json({ ok: false, error: { code: 'database_error', message: createError.message } });
+      }
+      
       business = newBusiness;
     }
     
     // Register machine
-    const { data: machine, error } = await supabase
+    const { data: machine, error: machineError } = await supabase
       .from('machines')
       .upsert({
         id: machine_id,
@@ -232,8 +237,12 @@ app.post('/api/openclaw/v1/machines/register', validateMachineToken, async (req,
       }, { onConflict: 'id' })
       .select();
     
-    if (error) {
-      return res.status(500).json({ ok: false, error: { code: 'database_error', message: error.message } });
+    if (machineError) {
+      return res.status(500).json({ ok: false, error: { code: 'database_error', message: machineError.message } });
+    }
+    
+    if (!machine || machine.length === 0) {
+      return res.status(500).json({ ok: false, error: { code: 'database_error', message: 'Failed to create machine record' } });
     }
     
     res.json({
@@ -241,8 +250,8 @@ app.post('/api/openclaw/v1/machines/register', validateMachineToken, async (req,
       machine: {
         machine_id,
         business_id: business.id,
-        registered_at: machine[0].created_at,
-        last_seen: machine[0].last_seen_at
+        registered_at: machine[0].created_at || new Date().toISOString(),
+        last_seen: machine[0].last_seen_at || new Date().toISOString()
       }
     });
   } catch (err) {
