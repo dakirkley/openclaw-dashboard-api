@@ -205,7 +205,7 @@ app.post('/api/openclaw/v1/machines/register', validateMachineToken, async (req,
       const { data: newBusiness, error: createError } = await supabase
         .from('businesses')
         .insert({
-          id: `biz_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+          id: uuidv4(),
           name: businessName,
           description: `Auto-created for machine ${machine_id}`,
           created_at: new Date().toISOString(),
