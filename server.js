@@ -348,6 +348,81 @@ app.post('/api/openclaw/v1/sync/inventory', validateMachineToken, async (req, re
   }
 });
 
+// ========== MACHINE & SKILL FETCH ENDPOINTS ==========
+
+// List all machines (requires API key)
+app.get('/api/v1/machines', validateApiKey, checkPermission('read'), async (req, res) => {
+  try {
+    const { data: machines, error } = await supabase
+      .from('machines')
+      .select('*, businesses(name)')
+      .order('last_seen_at', { ascending: false });
+    
+    if (error) {
+      return res.status(500).json({ success: false, error: error.message });
+    }
+    
+    const formattedMachines = machines?.map(m => ({
+      id: m.id,
+      business_id: m.business_id,
+      business_name: m.businesses?.name,
+      hostname: m.hostname,
+      platform: m.platform,
+      arch: m.arch,
+      version: m.version,
+      sync_mode: m.sync_mode,
+      last_seen_at: m.last_seen_at,
+      created_at: m.created_at
+    })) || [];
+    
+    res.json({ success: true, data: formattedMachines });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Get skills for a machine (requires API key)
+app.get('/api/v1/machines/:machineId/skills', validateApiKey, checkPermission('read'), async (req, res) => {
+  try {
+    const { machineId } = req.params;
+    
+    const { data: skills, error } = await supabase
+      .from('machine_skills')
+      .select('*')
+      .eq('machine_id', machineId)
+      .order('updated_at', { ascending: false });
+    
+    if (error) {
+      return res.status(500).json({ success: false, error: error.message });
+    }
+    
+    res.json({ success: true, data: skills || [] });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Get inventory for a machine (requires API key)
+app.get('/api/v1/machines/:machineId/inventory', validateApiKey, checkPermission('read'), async (req, res) => {
+  try {
+    const { machineId } = req.params;
+    
+    const { data: inventory, error } = await supabase
+      .from('inventories')
+      .select('*')
+      .eq('machine_id', machineId)
+      .single();
+    
+    if (error && error.code !== 'PGRST116') {
+      return res.status(500).json({ success: false, error: error.message });
+    }
+    
+    res.json({ success: true, data: inventory || null });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // ========== HELPER FUNCTIONS ==========
 
 async function validateApiKey(req, res, next) {
